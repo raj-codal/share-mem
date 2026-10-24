@@ -14,7 +14,8 @@ git clone https://github.com/raj-codal/share-mem ~/.claude/skills/share-mem
 cp ~/.claude/skills/share-mem/env.example ~/.config/share-mem/env
 ```
 
-Fill in `~/.config/share-mem/env`: Atlassian site, email, an API token, and the space key.
+Fill in `~/.config/share-mem/env`: Atlassian site, email, an API token, the space key, and the
+parent folder or page (`folder:<id>` or `page:<id>`, the id at the end of its Confluence URL).
 The space's permissions decide who can read and write.
 
 ## Use
@@ -22,8 +23,8 @@ The space's permissions decide who can read and write.
 Tell Claude "push memory" or "pull memory", or run the script directly:
 
 ```bash
-python3 ~/.claude/skills/share-mem/scripts/share_mem.py push ~/.claude/projects/<project>/memory
-python3 ~/.claude/skills/share-mem/scripts/share_mem.py pull ~/.claude/projects/<project>/memory
+/usr/bin/python3 ~/.claude/skills/share-mem/scripts/share_mem.py push ~/.claude/projects/<project>/memory
+/usr/bin/python3 ~/.claude/skills/share-mem/scripts/share_mem.py pull ~/.claude/projects/<project>/memory
 ```
 
 Push uploads only files that changed since the last push and refuses to run if any file
@@ -33,9 +34,12 @@ whose pages were deleted.
 ## Layout in Confluence
 
 ```
-share-mem                 root page
+<parent folder or page>   from SHARE_MEM_PARENT
   share-mem/raj           one page per author
     share-mem/raj/<slug>  one page per memory file, body is a markdown code block
 ```
 
 Python 3 standard library only, no dependencies.
+
+Use the macOS system Python (`/usr/bin/python3`). Homebrew Python 3.15 rejects corporate
+TLS-inspection certificates with "Missing Authority Key Identifier".

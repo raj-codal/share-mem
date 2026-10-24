@@ -47,8 +47,13 @@ def load_config():
             if line and not line.startswith("#") and "=" in line:
                 k, v = line.split("=", 1)
                 os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
-    cfg = {k: os.environ.get(k) for k in ("SHARE_MEM_SITE", "SHARE_MEM_EMAIL", "SHARE_MEM_TOKEN", "SHARE_MEM_SPACE")}
+    cfg = {k: os.environ.get(k) for k in ("SHARE_MEM_SITE", "SHARE_MEM_EMAIL", "SHARE_MEM_TOKEN", "SHARE_MEM_SPACE", "SHARE_MEM_PARENT")}
     cfg["SHARE_MEM_AUTHOR"] = os.environ.get("SHARE_MEM_AUTHOR") or (cfg["SHARE_MEM_EMAIL"] or "").split("@")[0]
+    # SHARE_MEM_PARENT: "folder:<id>" or "page:<id>", the container that holds one page per author
+    kind, _, pid = (cfg["SHARE_MEM_PARENT"] or "").partition(":")
+    if kind not in ("folder", "page") or not pid.isdigit():
+        cfg["SHARE_MEM_PARENT"] = None
+    cfg["PARENT_TYPE"], cfg["PARENT_ID"] = kind, pid
     missing = [k for k, v in cfg.items() if not v]
     if missing:
         sys.exit(f"missing config: {', '.join(missing)} (see {CONFIG_FILE})")
@@ -56,14 +61,19 @@ def load_config():
 
 
 class Confluence:
+    """Confluence Cloud REST v2. Parent may be a folder or a page."""
+
     def __init__(self, cfg):
-        self.base = f"https://{cfg['SHARE_MEM_SITE']}/wiki/rest/api"
-        self.space = cfg["SHARE_MEM_SPACE"]
+        self.base = f"https://{cfg['SHARE_MEM_SITE']}/wiki/api/v2"
         auth = b64encode(f"{cfg['SHARE_MEM_EMAIL']}:{cfg['SHARE_MEM_TOKEN']}".encode()).decode()
         self.headers = {"Authorization": f"Basic {auth}", "Content-Type": "application/json", "Accept": "application/json"}
+        spaces = self.req("GET", "/spaces", params={"keys": cfg["SHARE_MEM_SPACE"]})["results"]
+        if not spaces:
+            sys.exit(f"space {cfg['SHARE_MEM_SPACE']} not found or not visible to this token")
+        self.space_id = spaces[0]["id"]
 
     def req(self, method, path, body=None, params=None):
-        url = self.base + path + (("?" + urllib.parse.urlencode(params)) if params else "")
+        url = (path if path.startswith("http") else self.base + path) + (("?" + urllib.parse.urlencode(params)) if params else "")
         data = json.dumps(body).encode() if body is not None else None
         r = urllib.request.Request(url, data=data, method=method, headers=self.headers)
         try:
@@ -72,31 +82,37 @@ class Confluence:
         except urllib.error.HTTPError as e:
             sys.exit(f"{method} {path} -> {e.code}: {e.read().decode()[:300]}")
 
-    def find(self, title, parent_id=None):
-        res = self.req("GET", "/content", params={"spaceKey": self.space, "title": title, "expand": "version,ancestors", "limit": 25})
-        for p in res.get("results", []):
-            if parent_id is None or (p["ancestors"] and p["ancestors"][-1]["id"] == parent_id):
+    def paged(self, path, params):
+        while True:
+            res = self.req("GET", path, params=params)
+            yield from res.get("results", [])
+            nxt = res.get("_links", {}).get("next")
+            if not nxt:
+                return
+            path, params = f"https://{urllib.parse.urlparse(self.base).netloc}{nxt}", None
+
+    def find(self, title, parent_id):
+        for p in self.paged("/pages", {"space-id": self.space_id, "title": title, "limit": 25}):
+            if str(p.get("parentId")) == str(parent_id):
                 return p
         return None
 
-    def upsert(self, title, storage, parent_id=None):
+    def upsert(self, title, storage, parent_id):
         page = self.find(title, parent_id)
-        body = {"type": "page", "title": title, "space": {"key": self.space}, "body": {"storage": {"value": storage, "representation": "storage"}}}
-        if parent_id:
-            body["ancestors"] = [{"id": parent_id}]
+        body = {"spaceId": self.space_id, "status": "current", "title": title,
+                "body": {"representation": "storage", "value": storage}}
         if page:
-            body["version"] = {"number": page["version"]["number"] + 1, "minorEdit": True}
-            return self.req("PUT", f"/content/{page['id']}", body)
-        return self.req("POST", "/content", body)
+            body.update(id=page["id"], version={"number": page["version"]["number"] + 1, "message": "share-mem"})
+            return self.req("PUT", f"/pages/{page['id']}", body)
+        body["parentId"] = str(parent_id)
+        return self.req("POST", "/pages", body)
 
-    def children(self, page_id, expand=""):
-        out, start = [], 0
-        while True:
-            res = self.req("GET", f"/content/{page_id}/child/page", params={"limit": 100, "start": start, "expand": expand})
-            out += res.get("results", [])
-            if "next" not in res.get("_links", {}):
-                return out
-            start += 100
+    def children(self, parent_id, parent_type):
+        kind = "folders" if parent_type == "folder" else "pages"
+        return [c for c in self.paged(f"/{kind}/{parent_id}/direct-children", {"limit": 250}) if c["type"] == "page"]
+
+    def body(self, page_id):
+        return self.req("GET", f"/pages/{page_id}", params={"body-format": "storage"})["body"]["storage"]["value"]
 
 
 def to_storage(text):
@@ -128,9 +144,8 @@ def push(mem, cfg, force=False):
         sys.exit("refusing to push, possible secrets:\n  " + "\n  ".join(problems))
     state = json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
     api = Confluence(cfg)
-    root = api.find(ROOT_TITLE) or api.upsert(ROOT_TITLE, "<p>Shared Claude Code memories. One child page per author.</p>")
     author_title = f"{ROOT_TITLE}/{cfg['SHARE_MEM_AUTHOR']}"
-    author = api.find(author_title, root["id"]) or api.upsert(author_title, f"<p>Memories of {cfg['SHARE_MEM_AUTHOR']}.</p>", root["id"])
+    author = api.find(author_title, cfg["PARENT_ID"]) or api.upsert(author_title, f"<p>Memories of {cfg['SHARE_MEM_AUTHOR']}.</p>", cfg["PARENT_ID"])
     pushed = 0
     for p in files:
         text = p.read_text()
@@ -148,21 +163,20 @@ def push(mem, cfg, force=False):
 
 def pull(mem, cfg):
     api = Confluence(cfg)
-    root = api.find(ROOT_TITLE)
-    if not root:
-        sys.exit("no share-mem root page in space yet; someone must push first")
     team = mem / "team"
     index = []
-    for author_page in api.children(root["id"]):
+    for author_page in api.children(cfg["PARENT_ID"], cfg["PARENT_TYPE"]):
+        if not author_page["title"].startswith(ROOT_TITLE + "/"):
+            continue
         author = author_page["title"].split("/", 1)[-1]
         if author == cfg["SHARE_MEM_AUTHOR"]:
             continue
         out = team / author
         out.mkdir(parents=True, exist_ok=True)
         seen = set()
-        for page in api.children(author_page["id"], expand="body.storage"):
+        for page in api.children(author_page["id"], "page"):
             slug = page["title"].rsplit("/", 1)[-1]
-            text = from_storage(page["body"]["storage"]["value"])
+            text = from_storage(api.body(page["id"]))
             if not text.strip():
                 continue
             (out / f"{slug}.md").write_text(text)

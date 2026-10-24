@@ -19,13 +19,13 @@ Memory dir is the current project's memory directory shown in the system prompt
 Push own memories (scans for secrets first, aborts on any hit):
 
 ```bash
-python3 <skill-dir>/scripts/share_mem.py push <memory-dir>
+/usr/bin/python3 <skill-dir>/scripts/share_mem.py push <memory-dir>
 ```
 
 Pull everyone else's memories into `<memory-dir>/team/` and refresh `team/INDEX.md`:
 
 ```bash
-python3 <skill-dir>/scripts/share_mem.py pull <memory-dir>
+/usr/bin/python3 <skill-dir>/scripts/share_mem.py pull <memory-dir>
 ```
 
 ## Rules
@@ -46,6 +46,7 @@ SHARE_MEM_SITE=yoursite.atlassian.net
 SHARE_MEM_EMAIL=you@company.com
 SHARE_MEM_TOKEN=<Atlassian API token from id.atlassian.com/manage-profile/security/api-tokens>
 SHARE_MEM_SPACE=<Confluence space key>
+SHARE_MEM_PARENT=folder:<id>   # or page:<id>; the folder/page URL ends with this id
 SHARE_MEM_AUTHOR=<short name, defaults to the email local part>
 ```
 
