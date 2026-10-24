@@ -1,0 +1,8 @@
+env
+.env*
+!env.example
+*.token
+state.json
+__pycache__/
+.DS_Store
+.claude/
